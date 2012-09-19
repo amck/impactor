@@ -1,0 +1,72 @@
+#!/bin/bash
+# Author: Brian Lee Yung Rowe
+# Created: 2011.06.08
+# Original: $RIAK/rel/files/riak-admin
+
+# This is a generalization of the node tool caller script. All it does is
+# generate the executable call for nodetool based on a given component of the
+# system.
+
+do_exit()
+{
+  echo $1
+  exit $2
+}
+
+[ -z "$1" ] && do_exit "A component must be specified" 1
+project=$1
+
+RUNNER_SCRIPT_DIR=$(cd ${0%/*} && pwd)
+RUNNER_SCRIPT=${0##*/}
+
+RUNNER_BASE_DIR=${RUNNER_SCRIPT_DIR%/*}/../$project
+[ ! -d "$RUNNER_BASE_DIR" ] && do_exit "Component $project no existe" 2
+RUNNER_ETC_DIR=$RUNNER_BASE_DIR/etc
+RUNNER_LOG_DIR=$RUNNER_BASE_DIR/log
+RUNNER_USER=
+
+# Make sure CWD is set to runner base dir
+cd $RUNNER_BASE_DIR
+
+# Extract the target node name from node.args
+NAME_ARG=`grep '\-[s]*name' $RUNNER_ETC_DIR/vm.args`
+if [ -z "$NAME_ARG" ]; then
+    echo "vm.args needs to have either -name or -sname parameter."
+    exit 1
+fi
+
+# Learn how to specify node name for connection from remote nodes
+echo "$NAME_ARG" | grep '^-sname' > /dev/null 2>&1
+if [ "X$?" = "X0" ]; then
+    NAME_PARAM="-sname"
+    NAME_HOST=""
+else
+    NAME_PARAM="-name"
+    echo "$NAME_ARG" | grep '@.*' > /dev/null 2>&1
+    if [ "X$?" = "X0" ]; then
+        NAME_HOST=`echo "${NAME_ARG}" | sed -e 's/.*\(@.*\)$/\1/'`
+    else
+        NAME_HOST=""
+    fi
+fi
+
+# Extract the target cookie
+COOKIE_ARG=`grep '\-setcookie' $RUNNER_ETC_DIR/vm.args`
+if [ -z "$COOKIE_ARG" ]; then
+    echo "vm.args needs to have a -setcookie parameter."
+    exit 1
+fi
+
+# Identify the script name
+SCRIPT=`basename $0`
+
+START_ERL=`cat $RUNNER_BASE_DIR/releases/start_erl.data`
+ERTS_VSN=${START_ERL% *}
+APP_VSN=${START_ERL#* }
+
+# Add ERTS bin dir to our path
+ERTS_PATH=$RUNNER_BASE_DIR/erts-$ERTS_VSN/bin
+
+NODETOOL="$ERTS_PATH/escript $ERTS_PATH/nodetool $NAME_ARG $COOKIE_ARG"
+
+echo $NODETOOL

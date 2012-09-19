@@ -1,0 +1,192 @@
+#!/bin/bash
+
+do_exit()
+{
+  echo $1
+  exit $2
+}
+
+do_usage()
+{
+  do_exit "Usage: $0 [ -a ] [-c component] <start|stop|check|status|console|advance|join>" $1
+}
+
+set_env()
+{
+
+ case $appenv in
+   dev|qa|uat|prod) ROOT=/x/a/$distcomp;;
+   workstation) ROOT=~/workspace/$distcomp/rel/$distcomp;;
+   *) do_exit "environment '$appenv' is not supported" 1
+ esac
+
+ if [ $isdist ]; then 
+   project=$1
+   PREFIX=$ROOT/$project
+   nodepath="${ROOT}/${project}/bin/get_node"
+   controlproj="$controlname"
+   
+ else
+   project=$distcomp
+   PREFIX=$ROOT
+   nodepath="${ROOT}/bin/get_node"
+   controlproj="$distcomp"
+ fi
+     
+}
+
+
+do_start_stop()
+{
+  cmd=$1
+  for project in $components
+  do
+    set_env $project
+    if [ -d "$PREFIX" ]
+    then
+      echo "Attempting to $cmd $project"
+      $PREFIX/bin/$distcomp $cmd
+    else
+      do_exit "$PREFIX not found" 1
+    fi 
+  done
+  if [ "$cmd" = "start" ] && [ $isdist ];then
+    sleep 10
+    do_check > /dev/null 2>&1 
+    if [ $? -eq 0 ];then
+      do_join
+    else
+      do_exit "do_join aborted after a do_check failure" 1
+    fi 
+  fi
+}
+
+do_check()
+{
+  ec=0
+  for project in $components
+  do
+    set_env $project
+    echo "Checking component $distcomp:$project"
+    NODETOOL="$($nodepath $project)"
+    [ "$?" -ne "0" ] && do_exit "Unexpected response from get_node $NODETOOL" 5
+    response="$($NODETOOL ping)"
+    case $response in
+      pong) $NODETOOL ping;;
+      *) echo $response;ec=$(($ec + 1));;
+    esac
+  done
+  return $ec
+}
+
+do_status()
+{
+ echo "Checking component $distcomp status"
+ set_env $controlname
+ NODETOOL="$($nodepath $controlname)"
+ [ "$?" -ne "0" ] && do_exit "Unexpected response from get_node $NODETOOL" 5
+ response="$($NODETOOL ping)"
+ case $response in
+   pong) $NODETOOL rpcterms $distcomp system_check 1.;;
+   *) echo $response;;
+ esac
+}
+
+do_join()
+{
+  joiners=$1
+  [ -z $joiners ] && joiners=$components
+  control=$2
+  [ -z "$control" ] && control=impactor-control@127.0.0.1
+  module=$distcomp
+  for joiner in $joiners
+  do 
+    [ $joiner = $controlname ] && continue
+    echo "Joining impactor node $joiner to $control"
+    NODETOOL="$(${ROOT}/$joiner/bin/get_node $joiner)"
+    [ "$?" -ne "0" ] && do_exit "Unexpected response from get_node $NODETOOL" 5
+    response="$($NODETOOL ping)"
+    case $response in
+      pong) $NODETOOL rpc $module join $control;;
+      *) echo $response;;
+    esac
+  done
+}
+
+do_console()
+{
+  [ $optc ] && echo $components |egrep -q '[[:space:]]' && do_exit "$0 console cannot be used with multiple components:$components" 2
+  if [ ! $isdist ]; then
+    set_env $distcomp
+  elif [ $isdist ] && [ ! $optc ]; then
+    set_env $controlname
+  elif [ $isdist ] && [ $optc ]; then
+    set_env $components
+  fi
+  vm_args=$PREFIX/etc/vm.args
+  cookie=$(grep setcookie $vm_args | awk '{print $2}')
+  name=$(grep -e '-name' $vm_args | awk '{print $2}')
+  ip_addr=$(/sbin/ifconfig eth0 | grep 'inet addr' | awk -F: '{print $2}' | awk '{print $1}')
+  erl -name $project-leech@$ip_addr -remsh $name -setcookie $cookie
+}
+
+do_state_advance()
+{
+  event=$1
+  echo "open close power_down" | grep -qw $event
+  [ "$?" -ne "0" ] && do_exit "Invalid event '$event'" 6
+  set_env $controlname
+  echo "Attempting to advance platform with $event event"
+  NODETOOL="$($nodepath $controlproj)"
+  [ "$?" -ne "0" ] && do_exit "Unexpected response from get_node $NODETOOL" 5
+  response="$($NODETOOL ping)"
+  case $response in
+    pong) $NODETOOL rpc $distcomp $event;;
+    *) echo $response;;
+  esac
+}
+
+appenv=dev
+#script_dir=$(cd ${0%/*} && pwd)
+script_dir=$(readlink -f $0|awk -F/ '{gsub($NF,"");print}')
+distcomp=$(echo $script_dir|awk -F/ '{print $(NF-2)}')
+ROOT=/x/a/$distcomp
+
+while getopts "ac:e:lm:?" option 
+do
+  case $option in
+    a) allapps=yes;;
+    c) components="$OPTARG";optc=1;;
+    e) appenv=$OPTARG;;
+    l) echo list of components: ${components};exit 0;;
+    m) market=$OPTARG;;
+    ?) do_usage 0;;
+    *) do_usage 1;;
+  esac
+done
+shift $(($OPTIND - 1))
+cmd=$1
+
+[ -z "$cmd" ] && do_usage 1
+
+isdist=$(ls $ROOT|grep ontro)
+if [ $isdist ]; then
+  components="$appenv-control $(ls $ROOT|egrep -v 'bin|erts-5.8.3|etc|lib|log|releases|dump|control')"
+  controlname=$(ls -1 ${ROOT}|grep ontro|head -1)
+	
+else
+  components=$distcomp
+  controlname=$distcomp
+fi
+
+case $cmd in
+  start) do_start_stop $@;;
+  stop) do_start_stop $@;;
+  check) do_check $@;;
+  join) shift; do_join $@;;
+  status) do_status $@;;
+  advance) shift; do_state_advance $@;;
+  console) do_console;;
+  finish) do_finish_trading $@;;
+  *) do_usage 2;;
+esac

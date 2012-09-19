@@ -1,0 +1,16 @@
+{application, impactor,
+ [
+  {description, "WS Comet Connection Tester"},
+  {vsn, "1.0.0"},
+  {registered, []},
+  {applications, [
+                  kernel,
+                  stdlib,
+                  lager,
+                  mochiweb
+                 ]},
+  {mod, { impactor_app, []}},
+  {env, []}
+ ]}.
+
+ 
